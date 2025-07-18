@@ -1,4 +1,4 @@
-TTS_dataset: <WhissleAI/emotion-tagged-small-v1>
+TTS_dataset:"WhissleAI/emotion-tagged-small-v1"
 
 model_name: "canopylabs/orpheus-tts-0.1-pretrained"
 
