@@ -43,7 +43,7 @@ if is_distributed:
     # For distributed training, don't use device_map
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,  # Use bfloat16 to save memory
+        torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for Tesla T4 compatibility
         low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
         trust_remote_code=True,  # Allow custom model code
         use_cache=False  # Disable KV cache to save memory
@@ -52,7 +52,7 @@ else:
     # For single GPU training, use device_map
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,  # Use bfloat16 to save memory
+        torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for Tesla T4 compatibility
         device_map="auto",  # Automatically distribute across available GPUs
         low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
         trust_remote_code=True,  # Allow custom model code
@@ -64,8 +64,8 @@ def preprocess_function(examples):
     inputs = tokenizer(
         examples["text"], 
         truncation=True, 
-        padding="max_length", 
-        max_length=64,  # Further reduced from 128 to 64 to save more memory
+        padding=False,  # Don't pad during preprocessing, do it in data collator
+        max_length=32,  # Even shorter sequences to save more memory
         return_tensors=None
     )
     # For causal language modeling, labels are the same as input_ids
@@ -73,9 +73,10 @@ def preprocess_function(examples):
     return inputs
 
 ds = load_dataset(dsn, split="train")
-# Take only a subset for initial testing to reduce memory usage
-ds = ds.select(range(min(1000, len(ds))))  # Use only first 1000 samples for testing
-ds = ds.map(preprocess_function, batched=True, remove_columns=ds.column_names)
+# Take only a much smaller subset for initial testing
+ds = ds.select(range(min(100, len(ds))))  # Use only first 100 samples for testing
+# Process in smaller batches to reduce memory pressure
+ds = ds.map(preprocess_function, batched=True, batch_size=10, remove_columns=ds.column_names)
 
 # Clear memory after preprocessing
 torch.cuda.empty_cache()
@@ -89,7 +90,7 @@ training_args = TrainingArguments(
     num_train_epochs=epochs,
     per_device_train_batch_size=1,  # Force batch size to 1 to minimize memory usage
     logging_steps=1,
-    bf16=True,
+    fp16=True,  # Changed from bf16 to fp16 for Tesla T4 compatibility
     output_dir=f"./{base_repo_id}",
     report_to="none", 
     save_steps=save_steps,
