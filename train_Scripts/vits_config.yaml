@@ -1,0 +1,74 @@
+# VITS Emotion-based TTS Fine-tuning Configuration
+
+# Dataset Configuration
+TTS_dataset: "kuanhuggingface/PromptTTS_Emotion_Recognition"
+sample_rate: 22050
+max_audio_length: 22050  # 1 second at 22050 Hz
+n_mels: 80
+n_fft: 1024
+hop_length: 256
+
+# Model Configuration
+num_emotions: 5  # neutral, happy, sad, angry, surprise
+emotion_dim: 256
+text_encoder_dim: 192  # VITS hidden dimension
+
+# VITS Model Path
+vits_pretrained_path: "path/to/pretrained/vits/model"  # Update this with your model path
+
+# Training Configuration - Stage 1 (Emotion Embeddings + Decoder)
+stage1_epochs: 5
+stage1_lr: 0.0001
+stage1_batch_size: 8
+
+# Training Configuration - Stage 2 (End-to-End Fine-tuning)
+stage2_epochs: 10
+stage2_lr: 0.00002
+stage2_batch_size: 4
+
+# General Training Args
+batch_size: 4
+num_workers: 4
+gradient_clip: 5.0
+use_fp16: true
+
+# Optimizer Settings
+optimizer: "AdamW"
+beta1: 0.9
+beta2: 0.98
+eps: 1.0e-9
+weight_decay: 0.01
+
+# Scheduler Settings
+scheduler: "CosineAnnealingLR"
+warmup_steps: 1000
+
+# Checkpoint & Logging
+save_folder: "/external4/datasets/vits_emotion_checkpoints"
+save_every: 5  # Save checkpoint every N epochs
+log_every: 10  # Log to wandb every N steps
+
+# WandB Configuration
+use_wandb: false
+project_name: "vits-emotion-tts"
+run_name: "vits-emotion-finetune-v1"
+
+# Evaluation Configuration
+eval_texts:
+  - "Hello, how are you today?"
+  - "I am very happy to meet you."
+  - "This is terrible news."
+  - "Listen to me right now!"
+  - "I have something to tell you quietly."
+
+emotion_labels:
+  - "cheerful"
+  - "neural"
+  - "sad"
+  - "shouting"
+  - "whispering"
+
+# Advanced Settings
+use_mixed_precision: true
+find_unused_parameters: false
+distributed: false  # Set to true for multi-GPU training

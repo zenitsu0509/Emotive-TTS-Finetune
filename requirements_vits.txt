@@ -1,0 +1,30 @@
+# Core dependencies
+torch
+torchaudio
+transformers
+dataset
+
+# Audio processing
+librosa
+soundfile
+phonemizer
+
+# Training utilities
+wandb
+pyyaml
+tqdm
+numpy
+scipy
+
+# Optional: TTS library for VITS models
+# TTS>=0.17.0
+
+# Optional: Advanced features
+# tensorboard>=2.13.0
+# matplotlib>=3.7.0
+# seaborn>=0.12.0
+
+# Development
+# pytest>=7.3.0
+# black>=23.3.0
+# flake8>=6.0.0

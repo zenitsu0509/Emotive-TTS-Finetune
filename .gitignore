@@ -1,0 +1,3 @@
+.venv
+/train_Scripts/wandb
+__pycache__/
