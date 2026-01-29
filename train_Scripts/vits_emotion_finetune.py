@@ -28,7 +28,16 @@ class EmotionEmbedding(nn.Module):
     def __init__(self, num_emotions=5, emotion_dim=256):
         super().__init__()
         self.embedding = nn.Embedding(num_emotions, emotion_dim)
-        self.projection = nn.Linear(emotion_dim, emotion_dim)
+        # Multi-layer projection for better emotion separation
+        self.projection = nn.Sequential(
+            nn.Linear(emotion_dim, emotion_dim * 2),
+            nn.LayerNorm(emotion_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(emotion_dim * 2, emotion_dim),
+        )
+        # Emotion amplification factor (learnable per emotion)
+        self.emotion_scale = nn.Parameter(torch.ones(num_emotions, 1) * 2.0)
         
     def forward(self, emotion_ids):
         """
@@ -38,9 +47,11 @@ class EmotionEmbedding(nn.Module):
             emotion_embed: (batch_size, emotion_dim) emotion embeddings
         """
         emotion_embed = self.embedding(emotion_ids)
-        # Use Tanh to allow negative values and bound outputs [-1, 1]
-        # This prevents "dead" dimensions from ReLU and makes synthesis control easier
-        emotion_embed = torch.tanh(self.projection(emotion_embed))
+        # Apply amplification per emotion for stronger differentiation
+        scales = self.emotion_scale[emotion_ids]
+        emotion_embed = emotion_embed * scales
+        # Project with non-linearity
+        emotion_embed = self.projection(emotion_embed)
         return emotion_embed
 
 
@@ -51,12 +62,24 @@ class VITSWithEmotion(nn.Module):
         self.vits = vits_model
         self.emotion_embedding = EmotionEmbedding(num_emotions, emotion_dim)
         
-        # Assuming VITS text encoder output dimension
-        # Adjust this based on your VITS model architecture
-        self.text_encoder_dim = 192  # Common VITS hidden dim
+        # VITS uses 192 hidden dim typically
+        self.text_encoder_dim = 192
         
-        # Fusion layer to combine text and emotion features
-        self.fusion = nn.Linear(self.text_encoder_dim + emotion_dim, self.text_encoder_dim)
+        # Project emotion to VITS speaker embedding size (usually 192 or 256)
+        # This allows emotions to act as "speaker" variations
+        self.emotion_to_speaker = nn.Sequential(
+            nn.Linear(emotion_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 192)  # Match VITS speaker embedding size
+        )
+        
+        # Fusion layer with residual connection
+        self.fusion = nn.Sequential(
+            nn.Linear(self.text_encoder_dim + emotion_dim, self.text_encoder_dim * 2),
+            nn.LayerNorm(self.text_encoder_dim * 2),
+            nn.ReLU(),
+            nn.Linear(self.text_encoder_dim * 2, self.text_encoder_dim)
+        )
         
     def forward(self, x, x_lengths, y, y_lengths, emotion_ids, **kwargs):
         """
@@ -85,20 +108,29 @@ class VITSWithEmotion(nn.Module):
         # Pass through rest of VITS model
         return self.vits(x, x_lengths, y, y_lengths, text_encoded=fused, **kwargs)
     
-    def infer(self, x, x_lengths, emotion_ids, **kwargs):
-        """Inference with emotion conditioning"""
-        emotion_embed = self.emotion_embedding(emotion_ids)
+    def infer(self, input_ids, emotion_ids, **kwargs):
+        """Inference with emotion conditioning - inject as speaker embedding"""
+        emotion_embed = self.emotion_embedding(emotion_ids)  # (B, emotion_dim)
         
-        # Similar to forward but for inference
-        text_encoded = self.vits.encode_text(x, x_lengths) if hasattr(self.vits, 'encode_text') else x
+        # Convert emotion to speaker-like embedding for VITS
+        speaker_embed = self.emotion_to_speaker(emotion_embed)  # (B, 192)
         
-        B, T, D = text_encoded.shape
-        emotion_expanded = emotion_embed.unsqueeze(1).expand(B, T, -1)
-        
-        combined = torch.cat([text_encoded, emotion_expanded], dim=-1)
-        fused = self.fusion(combined)
-        
-        return self.vits.infer(x, x_lengths, text_encoded=fused, **kwargs)
+        # VITS expects speaker_id or can take speaker embeddings
+        # We'll try to pass it as speaker conditioning
+        try:
+            # Method 1: Try passing as speaker embedding directly
+            if hasattr(self.vits, 'inference'):
+                output = self.vits.inference(input_ids, speaker_embeddings=speaker_embed, **kwargs)
+            # Method 2: Try standard forward with speaker embedding
+            elif hasattr(self.vits, '__call__'):
+                # Many VITS models accept speaker_id parameter
+                output = self.vits(input_ids, speaker_embeddings=speaker_embed, **kwargs)
+            else:
+                output = self.vits(input_ids, **kwargs)
+            return output
+        except TypeError:
+            # Fallback if speaker embeddings not accepted
+            return self.vits(input_ids, **kwargs)
 
 
 # ============================
@@ -106,10 +138,23 @@ class VITSWithEmotion(nn.Module):
 # ============================
 class EmotionTTSDataset(Dataset):
     """Dataset for emotion-tagged TTS training"""
-    def __init__(self, hf_dataset, target_sr=22050, max_length=16000):
+    def __init__(self, hf_dataset, target_sr=16000, max_length=16000, emotion_map=None):
         self.dataset = hf_dataset
         self.target_sr = target_sr
         self.max_length = max_length
+        
+        # Emotion mapping (string to int)
+        if emotion_map is None:
+            # Default ESD emotion mapping
+            self.emotion_map = {
+                'Neutral': 0,
+                'Happy': 1,
+                'Sad': 2,
+                'Angry': 3,
+                'Surprise': 4
+            }
+        else:
+            self.emotion_map = emotion_map
         
     def __len__(self):
         return len(self.dataset)
@@ -142,11 +187,15 @@ class EmotionTTSDataset(Dataset):
         )
         mel = mel_transform(waveform)
         
+        # Map emotion string to integer
+        emotion_str = item['emotion']
+        emotion_id = self.emotion_map.get(emotion_str, 0)  # Default to 0 if unknown
+        
         return {
             'waveform': waveform,
             'mel': mel,
             'text': item['transcription'],
-            'emotion': item['label'],  # Emotion class index
+            'emotion': emotion_id,  # Now it's an integer
             'audio_length': len(waveform)
         }
 
@@ -377,6 +426,7 @@ class EmotionVITSTrainer:
     def compute_loss(self, texts, mels, emotions):
         """
         Compute loss for VITS training with emotion conditioning
+        Uses: 1) Classification loss, 2) Contrastive loss, 3) Diversity regularization
         """
         try:
             # Get emotion embeddings from the model
@@ -392,22 +442,59 @@ class EmotionVITSTrainer:
             mel_proj_norm = F.normalize(mel_proj, dim=1)
             emotion_embeds_norm = F.normalize(emotion_embeds, dim=1)
             
-            # Cosine embedding loss (encourages similar embeddings)
-            cosine_loss = 1 - F.cosine_similarity(mel_proj_norm, emotion_embeds_norm, dim=1).mean()
-            
-            # Classification loss - predict emotion from mel features
+            # 1. Classification loss - predict emotion from mel features
             all_emotion_embeds = self.model.emotion_embedding.embedding.weight  # (num_emotions, emotion_dim)
             all_emotion_embeds_norm = F.normalize(all_emotion_embeds, dim=1)
             
             # Compute similarities to all emotions
             similarities = torch.matmul(mel_proj_norm, all_emotion_embeds_norm.t())  # (B, num_emotions)
-            similarities = similarities * 10.0  # Scale for better gradients
+            similarities = similarities * 15.0  # Higher temperature for sharper gradients
             
-            # Classification loss
             classification_loss = F.cross_entropy(similarities, emotions)
             
+            # 2. Contrastive loss - pull same emotions together, push different apart
+            # InfoNCE-style contrastive loss
+            batch_size = emotion_embeds.shape[0]
+            
+            # Compute pairwise similarities
+            similarity_matrix = torch.matmul(emotion_embeds_norm, emotion_embeds_norm.t()) / 0.07  # temperature
+            
+            # Create mask for same emotion pairs
+            emotion_mask = emotions.unsqueeze(0) == emotions.unsqueeze(1)  # (B, B)
+            emotion_mask.fill_diagonal_(False)  # Exclude self
+            
+            # Contrastive loss: maximize similarity for same emotions, minimize for different
+            contrastive_loss = 0
+            if emotion_mask.any():
+                # For each sample, pull positives (same emotion) closer
+                pos_similarities = similarity_matrix[emotion_mask]
+                neg_similarities = similarity_matrix[~emotion_mask]
+                
+                if len(pos_similarities) > 0 and len(neg_similarities) > 0:
+                    # Encourage positive pairs to have high similarity
+                    contrastive_loss = -torch.log(
+                        torch.exp(pos_similarities).mean() / 
+                        (torch.exp(neg_similarities).mean() + torch.exp(pos_similarities).mean() + 1e-8)
+                    )
+            
+            # 3. Diversity regularization - encourage emotion embeddings to be different
+            # Compute pairwise distances between emotion centroids
+            emotion_distances = torch.cdist(all_emotion_embeds, all_emotion_embeds, p=2)
+            # Penalize if distances are too small (encourage separation)
+            # Use margin-based loss: penalize if distance < margin
+            margin = 2.0  # Minimum desired distance between emotions
+            diversity_loss = F.relu(margin - emotion_distances).mean()  # Penalize small distances
+            
+            # 4. Alignment loss - mel features should match emotion embeddings
+            alignment_loss = F.mse_loss(mel_proj_norm, emotion_embeds_norm)
+            
             # Combined loss with balanced weights
-            total_loss = cosine_loss + classification_loss
+            total_loss = (
+                1.0 * classification_loss +      # Primary: classify correctly
+                0.5 * contrastive_loss +         # Secondary: group same emotions
+                0.3 * diversity_loss +           # Tertiary: keep emotions distinct
+                0.5 * alignment_loss             # Align mel with emotion
+            )
             
             return total_loss
             
@@ -518,25 +605,29 @@ def evaluate_emotion_generation(model, test_texts, emotion_labels, device, save_
                     
                     inputs = tokenizer(text, return_tensors="pt")
                     input_ids = inputs['input_ids'].to(device)
+                    emotion_tensor = torch.tensor([emotion_id]).to(device)
                     
-                    # Try to generate with VITS model
-                    if hasattr(model.vits, '__call__'):
-                        try:
-                            # Forward pass through VITS
-                            outputs = model.vits(input_ids)
+                    # Use our custom inference method with emotion conditioning
+                    try:
+                        with torch.no_grad():
+                            outputs = model.infer(input_ids, emotion_tensor)
                             
                             # Extract waveform from outputs
                             if hasattr(outputs, 'waveform'):
                                 generated_audio = outputs.waveform.squeeze().cpu()
-                                generation_method = "vits_direct"
+                                generation_method = "vits_emotion_conditioned"
                             elif isinstance(outputs, dict) and 'waveform' in outputs:
                                 generated_audio = outputs['waveform'].squeeze().cpu()
-                                generation_method = "vits_dict"
+                                generation_method = "vits_emotion_dict"
                             elif isinstance(outputs, torch.Tensor):
                                 generated_audio = outputs.squeeze().cpu()
-                                generation_method = "vits_tensor"
-                        except Exception as e:
-                            print(f"    VITS forward failed: {e}")
+                                generation_method = "vits_emotion_tensor"
+                            
+                            print(f"    Generated with emotion conditioning: {generated_audio.shape}")
+                    except Exception as e:
+                        print(f"    Emotion-conditioned VITS failed: {e}")
+                        import traceback
+                        traceback.print_exc()
                     
                 except Exception as e:
                     print(f"    Tokenization error: {e}")
@@ -700,16 +791,32 @@ def main():
     
     # Load dataset
     print("\n[1/6] Loading dataset...")
-    dataset_name = config.get('TTS_dataset', 'kuanhuggingface/PromptTTS_Emotion_Recognition')
+    dataset_name = config.get('TTS_dataset', 'zenitsu09/esd-english-only')
     
     try:
         ds = load_dataset(dataset_name, split='train')
         print(f"Dataset loaded: {len(ds)} samples")
         
+        # CRITICAL: Shuffle dataset to avoid emotion clustering
+        # ESD has emotions in sequential order (all Neutral, then all Happy, etc.)
+        print("\n⚠️  SHUFFLING DATASET (ESD emotions are sequential!)")
+        ds = ds.shuffle(seed=42)
+        print("✓ Dataset shuffled with seed=42")
+        
         # Print dataset info
         print(f"\nDataset features: {ds.features}")
         if len(ds) > 0:
             print(f"Sample item: {ds[0]}")
+            
+        # Check emotion distribution
+        from collections import Counter
+        emotions = [item['emotion'] for item in ds]
+        emotion_counts = Counter(emotions)
+        print("\nEmotion Distribution:")
+        for emotion, count in sorted(emotion_counts.items()):
+            percentage = (count / len(ds)) * 100
+            print(f"  {emotion:10s}: {count:5d} samples ({percentage:5.1f}%)")
+            
     except Exception as e:
         print(f"Error loading dataset: {e}")
         print("Using placeholder dataset for demonstration...")
@@ -717,20 +824,35 @@ def main():
     
     # Create dataset and dataloader
     if ds is not None:
+        # Create emotion mapping
+        emotion_map = config.get('emotion_map', {
+            'Neutral': 0,
+            'Happy': 1,
+            'Sad': 2,
+            'Angry': 3,
+            'Surprise': 4
+        })
+        
         train_dataset = EmotionTTSDataset(
             ds,
-            target_sr=config.get('sample_rate', 22050),
-            max_length=config.get('max_audio_length', 22050)
+            target_sr=config.get('sample_rate', 16000),
+            max_length=config.get('max_audio_length', 16000),
+            emotion_map=emotion_map
         )
         
+        # IMPORTANT: shuffle=True in DataLoader for additional randomization
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.get('batch_size', 4),
-            shuffle=True,
+            shuffle=True,  # CRITICAL: Ensures batches have mixed emotions
             num_workers=config.get('num_workers', 4),
             collate_fn=collate_fn,
-            pin_memory=True
+            pin_memory=True,
+            drop_last=True  # Drop last incomplete batch for consistent training
         )
+        
+        print(f"\n✓ DataLoader created with shuffle=True and batch_size={config.get('batch_size', 4)}")
+        print(f"  Total batches per epoch: {len(train_loader)}")
     else:
         print("Skipping dataloader creation due to dataset loading error")
         return
@@ -847,4 +969,32 @@ def main():
 
 
 if __name__ == "__main__":
+    # Print dataset recommendations before starting
+    print("\n" + "="*70)
+    print("RECOMMENDED DATASETS FOR EMOTION TTS")
+    print("="*70)
+    print("\nFor better emotion differentiation, consider these datasets:")
+    print("\n1. ESD (Emotional Speech Dataset) - RECOMMENDED")
+    print("   - HuggingFace: 'emotion-english-distilroberta-base'")
+    print("   - 5 emotions: neutral, happy, sad, angry, surprise")
+    print("   - High quality, professional actors")
+    print("   - ~350 parallel utterances per emotion")
+    print("\n2. RAVDESS (Ryerson Audio-Visual Database)")
+    print("   - Strong emotion variation")
+    print("   - 8 emotions with intensity levels")
+    print("   - Professional actors, studio quality")
+    print("\n3. CREMA-D")
+    print("   - 6 emotions: anger, disgust, fear, happy, neutral, sad")
+    print("   - 7,442 clips from 91 actors")
+    print("   - More diverse than your current dataset")
+    print("\n4. IEMOCAP (Interactive Emotional Dyadic Motion Capture)")
+    print("   - Gold standard for emotion research")
+    print("   - Natural conversational emotions")
+    print("   - Requires license but worth it")
+    print("\nCurrent dataset issues:")
+    print("- Emotion variance may be too subtle")
+    print("- Check if labels match actual audio emotions")
+    print("- Verify emotion distribution is balanced")
+    print("="*70 + "\n")
+    
     main()

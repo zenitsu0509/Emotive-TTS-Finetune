@@ -1,208 +1,330 @@
-# Emotive TTS Fine-tuning
+# VITS Emotion-based TTS Fine-tuning
 
-A comprehensive toolkit for fine-tuning Text-to-Speech (TTS) models with emotional expression capabilities. This project provides multiple training approaches including full fine-tuning and efficient LoRA (Low-Rank Adaptation) methods to enhance TTS models with emotional understanding.
+Complete implementation for fine-tuning VITS (Variational Inference with adversarial learning for end-to-end Text-to-Speech) models with emotion conditioning.
 
-## Features
+## 🎯 Overview
 
-- 🎭 **Emotion-aware TTS training** using emotion-tagged datasets
-- 🚀 **Multiple training methods**:
-  - Full model fine-tuning
-  - LoRA (Low-Rank Adaptation) for efficient training
-- ⚡ **Optimized training** with Flash Attention 2 and BF16 precision
-- 📊 **Experiment tracking** with Weights & Biases (WandB) integration
-- ⚙️ **Configurable parameters** via YAML configuration
-- 🔄 **Model merging and saving** for LoRA adapters
+This project implements a two-stage training approach for adding emotion control to pretrained VITS TTS models:
 
-## Requirements
+1. **Stage 1**: Train emotion embeddings and decoder (frozen encoder)
+2. **Stage 2**: End-to-end fine-tuning with lower learning rate
 
-- Python 3.8+
-- CUDA-compatible GPU (recommended)
-- Hugging Face account and token
+## 🌟 Features
 
-### Dependencies
+- ✨ **Emotion Embedding Layer**: Inject emotion information into VITS architecture
+- 🎭 **5 Emotion Classes**: Neutral, Happy, Sad, Angry, Surprise
+- 🔄 **Two-Stage Training**: Efficient progressive fine-tuning
+- 📊 **WandB Integration**: Track training metrics in real-time
+- 🎵 **22.05kHz Audio**: High-quality speech synthesis
+- 🚀 **Flexible Model Loading**: Support for multiple VITS implementations
+
+## 📋 Dataset
+
+Using the [PromptTTS Emotion-Tagged Dataset](https://huggingface.co/datasets/WhissleAI/emotion-tagged-small-v1):
+
+- **Audio**: 22.05 kHz, 0.86-1.3s duration
+- **Text**: Transcriptions
+- **Labels**: 5 emotion classes
+- **Format**: Hugging Face datasets
+
+## 🚀 Quick Start
+
+### 1. Installation
 
 ```bash
-pip install torch transformers datasets peft wandb pyyaml huggingface_hub
-```
-
-## Quick Start
-
-### 1. Setup
-
-1. Clone the repository:
-```bash
+# Clone the repository
 git clone https://github.com/zenitsu0509/Emotive-TTS-Finetune.git
 cd Emotive-TTS-Finetune
-```
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt  # if available, or install manually as shown above
-```
+# Install dependencies
+pip install -r requirements_vits.txt
 
-3. Login to Hugging Face:
-```bash
+# Login to Hugging Face
 huggingface-cli login
-```
 
-4. Setup WandB (optional but recommended):
-```bash
+# (Optional) Login to WandB
 wandb login
 ```
 
-### 2. Configuration
+### 2. Configure Training
 
-Edit the `train_Scripts/config.yaml` file to customize your training:
+Edit `train_Scripts/vits_config.yaml`:
 
 ```yaml
-# Dataset and Model
-TTS_dataset: <WhissleAI/emotion-tagged-small-v1>
-model_name: "canopylabs/orpheus-tts-0.1-pretrained"
+# Update these paths
+vits_pretrained_path: "path/to/pretrained/vits/model"
+TTS_dataset: "WhissleAI/emotion-tagged-small-v1"
 
-# Training Parameters
-epochs: 1
-batch_size: 1
-learning_rate: 5.0e-5
-save_steps: 5000
-
-# Paths and Naming
-save_folder: "checkpoints"
-project_name: "tuning-orpheus"
-run_name: "experiment-1"
+# Training settings
+stage1_epochs: 5      # Emotion embedding training
+stage2_epochs: 10     # Full fine-tuning
+batch_size: 4
 ```
 
-### 3. Training Options
-
-#### Option A: Full Fine-tuning
-
-For complete model fine-tuning with maximum adaptation:
+### 3. Train the Model
 
 ```bash
 cd train_Scripts
-python train.py
+
+# Run training
+python vits_emotion_finetune.py
 ```
 
-#### Option B: LoRA Fine-tuning (Recommended)
-
-For efficient training with reduced memory requirements:
+### 4. Inference
 
 ```bash
-cd train_Scripts
-python lora_train.py
+# Generate with single emotion
+python inference.py \
+    --checkpoint checkpoints/vits_emotion/final_model.pt \
+    --config vits_config.yaml \
+    --text "Hello, how are you today?" \
+    --emotion happy
+
+# Generate with all emotions
+python inference.py \
+    --checkpoint checkpoints/vits_emotion/final_model.pt \
+    --config vits_config.yaml \
+    --text "Hello, how are you today!" \
+    --all-emotions
+
+# Interactive mode
+python inference.py \
+    --checkpoint checkpoints/vits_emotion/final_model.pt \
+    --config vits_config.yaml \
+    --interactive
 ```
 
-#### Option C: Notebook-style Training
+## 📁 Project Structure
 
-For interactive training (requires token input):
-
-```bash
-python finetune_tts.py
+```
+Emotive-TTS-Finetune/
+├── train_Scripts/
+│   ├── vits_emotion_finetune.py   # Main training script
+│   ├── vits_model_utils.py        # Model loading utilities
+│   ├── inference.py               # Inference script
+│   ├── vits_config.yaml           # Configuration file
+│   └── config.yaml                # Original config (for reference)
+├── requirements_vits.txt          # Dependencies
+└── README_VITS.md                 # This file
 ```
 
-## Training Methods Explained
+## 🏗️ Architecture
 
-### Full Fine-tuning (`train.py`)
-- Updates all model parameters
-- Requires more GPU memory and time
-- Best for maximum model adaptation
-- Suitable when you have sufficient computational resources
+### Emotion Embedding Module
 
-### LoRA Fine-tuning (`lora_train.py`)
-- Only trains small adapter layers (rank=32, alpha=64)
-- Significantly reduced memory requirements
-- Faster training and inference
-- Maintains base model performance while adding emotional capabilities
-- Automatically merges and saves the final model
+```python
+EmotionEmbedding(num_emotions=5, emotion_dim=256)
+├── Embedding(5, 256)
+└── Linear(256, 256) + ReLU
+```
 
-### Configuration Parameters
+### VITS with Emotion Conditioning
 
-| Parameter | Description | Default Value |
-|-----------|-------------|---------------|
-| `TTS_dataset` | Hugging Face dataset name | `WhissleAI/emotion-tagged-small-v1` |
-| `model_name` | Base TTS model to fine-tune | `canopylabs/orpheus-tts-0.1-pretrained` |
-| `epochs` | Number of training epochs | 1 |
-| `batch_size` | Training batch size | 1 |
-| `learning_rate` | Learning rate for optimization | 5.0e-5 |
-| `save_steps` | Steps between model checkpoints | 5000 |
-| `save_folder` | Directory for saving checkpoints | `checkpoints` |
-| `project_name` | WandB project name | `tuning-orpheus` |
-| `run_name` | WandB run identifier | `5e5-0` |
+```
+Text → VITS Text Encoder → (B, T, 192)
+                              ↓
+Emotion → Emotion Embedding → (B, 256) → Expand → (B, T, 256)
+                                                      ↓
+                                            Concatenate
+                                                      ↓
+                                            Fusion Layer
+                                                      ↓
+                                            VITS Decoder → Audio
+```
 
-## Model and Dataset Details
+## 🎓 Training Details
 
-### Base Model
-- **Model**: `canopylabs/orpheus-tts-0.1-pretrained`
-- **Type**: Causal Language Model adapted for TTS
-- **Features**: Flash Attention 2 support, BF16 precision
+### Stage 1: Emotion Embeddings + Decoder
 
-### Training Dataset
-- **Dataset**: `WhissleAI/emotion-tagged-small-v1`
-- **Content**: Emotion-tagged text data for TTS training
-- **Split**: Uses training split by default
+- **Duration**: 5 epochs
+- **Learning Rate**: 1e-4
+- **Frozen**: Text encoder, flow modules
+- **Trainable**: Emotion embedding, fusion layer, decoder
 
-## Output
+### Stage 2: End-to-End Fine-tuning
 
-### Full Fine-tuning Output
-- Model checkpoints saved in `./checkpoints/`
-- Complete fine-tuned model ready for inference
+- **Duration**: 10 epochs
+- **Learning Rate**: 2e-5 (lower)
+- **Trainable**: All parameters
 
-### LoRA Fine-tuning Output
-- LoRA adapter checkpoints in `./checkpoints/`
-- Merged final model in `./checkpoints/merged/`
-- Both model weights and tokenizer saved
+### Optimizer
 
-## Monitoring Training
+- **Type**: AdamW
+- **Betas**: (0.9, 0.98)
+- **Weight Decay**: 0.01
+- **Gradient Clipping**: 5.0
 
-All training runs automatically log to Weights & Biases with:
-- Training loss progression
-- Learning rate schedules
-- System metrics (GPU usage, memory, etc.)
-- Configurable run names for experiment organization
+## 🔧 Model Loading Options
 
-Access your experiments at: `https://wandb.ai/your-username/tuning-orpheus`
+The project supports multiple VITS implementations:
 
-## Memory Requirements
+### Option 1: TTS Library (Coqui/Mozilla)
 
-### Full Fine-tuning
-- Requires ~8-16GB GPU memory (depending on model size)
-- Suitable for high-end GPUs (RTX 3080+, A100, etc.)
+```python
+from vits_model_utils import load_vits_from_tts_library
 
-### LoRA Fine-tuning
-- Requires ~4-8GB GPU memory
-- Suitable for mid-range GPUs (RTX 3060+)
-- Recommended for most users
+vits_model, config = load_vits_from_tts_library(
+    "path/to/model.pth",
+    "path/to/config.json"
+)
+```
 
-## Troubleshooting
+### Option 2: Hugging Face
 
-### Common Issues
+```python
+from vits_model_utils import load_vits_from_huggingface
 
-1. **CUDA Out of Memory**
-   - Reduce `batch_size` in config.yaml
-   - Use LoRA training instead of full fine-tuning
-   - Enable gradient checkpointing
+model, tokenizer = load_vits_from_huggingface("facebook/mms-tts-eng")
+```
 
-2. **Tokenizer Issues**
-   - Ensure Hugging Face token has proper permissions
-   - Verify model access rights
+### Option 3: Custom VITS
 
-3. **WandB Integration**
-   - Login with `wandb login` before training
-   - Set `report_to: null` in training args to disable WandB
+Implement your own VITS model and use the `VITSModelWrapper` class.
 
-## Contributing
+## 📊 Monitoring Training
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+### WandB Dashboard
 
-## License
+Training metrics logged:
+- Loss curves (Stage 1 & 2)
+- Learning rate schedule
+- Gradient norms
+- Audio samples (if configured)
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### Console Output
 
-## Acknowledgments
+```
+[1/6] Loading dataset...
+Dataset loaded: 10000 samples
 
-- [Orpheus TTS](https://huggingface.co/canopylabs/orpheus-tts-0.1-pretrained) for the base model
-- [WhissleAI](https://huggingface.co/WhissleAI) for the emotion-tagged dataset
-- Hugging Face team for transformers and PEFT libraries
+[2/6] Loading pretrained VITS model...
+Model created with 5 emotion classes
+Total parameters: 28,345,120
+
+==================================================
+STAGE 1: Training Emotion Embeddings + Decoder
+==================================================
+
+Freezing VITS encoder weights...
+Trainable parameters: 5,234,688
+
+Epoch 1/5: 100%|████████| 2500/2500 [12:34<00:00, 3.31it/s, loss=0.4523]
+Epoch 1 - Average Loss: 0.4782
+```
+
+## 🎤 Evaluation
+
+Generate the same text with different emotions:
+
+```python
+from inference import EmotionTTSInference
+
+inference = EmotionTTSInference(
+    checkpoint_path="checkpoints/vits_emotion/final_model.pt",
+    config_path="vits_config.yaml"
+)
+
+# Compare emotions
+for emotion in ['neutral', 'happy', 'sad', 'angry', 'surprise']:
+    audio, sr = inference.synthesize(
+        "I am very excited about this!",
+        emotion=emotion
+    )
+    # Listen to the differences!
+```
+
+## 🔍 Advanced Configuration
+
+### Custom Emotion Labels
+
+Edit `vits_config.yaml`:
+
+```yaml
+num_emotions: 7
+emotion_labels:
+  - "neutral"
+  - "happy"
+  - "sad"
+  - "angry"
+  - "surprise"
+  - "fear"
+  - "disgust"
+```
+
+### Audio Processing
+
+```yaml
+sample_rate: 22050
+n_mels: 80
+n_fft: 1024
+hop_length: 256
+```
+
+### Multi-GPU Training
+
+```yaml
+distributed: true
+# Run with: torchrun --nproc_per_node=4 vits_emotion_finetune.py
+```
+
+## 🐛 Troubleshooting
+
+### CUDA Out of Memory
+
+Reduce batch size in config:
+```yaml
+stage1_batch_size: 2
+stage2_batch_size: 2
+```
+
+### Audio Quality Issues
+
+Adjust inference parameters:
+```python
+audio, sr = inference.synthesize(
+    text,
+    emotion='happy',
+    noise_scale=0.667,    # Lower = more deterministic
+    length_scale=1.0      # Adjust speech duration
+)
+```
+
+### Model Loading Errors
+
+Make sure you have the correct VITS model format. Check `vits_model_utils.py` for supported formats.
+
+## 📚 References
+
+- [VITS Paper](https://arxiv.org/abs/2106.06103)
+- [PromptTTS Dataset](https://huggingface.co/datasets/WhissleAI/emotion-tagged-small-v1)
+- [TTS Library](https://github.com/coqui-ai/TTS)
+- [Hugging Face VITS](https://huggingface.co/docs/transformers/model_doc/vits)
+
+## 📝 Citation
+
+```bibtex
+@article{kim2021conditional,
+  title={Conditional variational autoencoder with adversarial learning for end-to-end text-to-speech},
+  author={Kim, Jaehyeon and Kong, Jungil and Son, Juhee},
+  journal={International Conference on Machine Learning},
+  year={2021}
+}
+```
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+## 🤝 Contributing
+
+Contributions welcome! Please open an issue or submit a pull request.
+
+## 💬 Support
+
+For questions or issues:
+- Open a GitHub issue
+- Contact: [your-email@example.com]
+
+---
+
+**Happy Training! 🎉**

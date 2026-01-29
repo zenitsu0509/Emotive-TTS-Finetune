@@ -1,29 +1,38 @@
 # VITS Emotion-based TTS Fine-tuning Configuration
 
 # Dataset Configuration
-TTS_dataset: "kuanhuggingface/PromptTTS_Emotion_Recognition"
-sample_rate: 22050
-max_audio_length: 22050  # 1 second at 22050 Hz
+TTS_dataset: "zenitsu09/esd-english-only"
+sample_rate: 16000  # ESD uses 16kHz
+max_audio_length: 80000  # 5 seconds at 16kHz (ESD clips are longer)
 n_mels: 80
 n_fft: 1024
 hop_length: 256
 
 # Model Configuration
-num_emotions: 5  # neutral, happy, sad, angry, surprise
-emotion_dim: 256
+num_emotions: 5  # ESD: Neutral, Happy, Sad, Angry, Surprise
+emotion_dim: 512  # INCREASED from 256 for better separation
 text_encoder_dim: 192  # VITS hidden dimension
+emotion_amplification: 3.0  # Scale factor for emotion strength
+
+# ESD emotion mapping (string to int)
+emotion_map:
+  Neutral: 0
+  Happy: 1
+  Sad: 2
+  Angry: 3
+  Surprise: 4
 
 # VITS Model Path
 vits_pretrained_path: "path/to/pretrained/vits/model"  # Update this with your model path
 
 # Training Configuration - Stage 1 (Emotion Embeddings + Decoder)
-stage1_epochs: 5
-stage1_lr: 0.0001
+stage1_epochs: 10  # INCREASED from 5 for better emotion learning
+stage1_lr: 0.0002  # INCREASED from 0.0001 for faster convergence
 stage1_batch_size: 8
 
 # Training Configuration - Stage 2 (End-to-End Fine-tuning)
-stage2_epochs: 10
-stage2_lr: 0.00002
+stage2_epochs: 15  # INCREASED from 10
+stage2_lr: 0.00005  # INCREASED from 0.00002
 stage2_batch_size: 4
 
 # General Training Args
@@ -62,11 +71,11 @@ eval_texts:
   - "I have something to tell you quietly."
 
 emotion_labels:
-  - "cheerful"
-  - "neural"
-  - "sad"
-  - "shouting"
-  - "whispering"
+  - "Neutral"
+  - "Happy"
+  - "Sad"
+  - "Angry"
+  - "Surprise"
 
 # Advanced Settings
 use_mixed_precision: true
